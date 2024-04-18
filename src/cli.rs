@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::io::{stdin, stdout, Write};
 
 use clap::{ArgMatches, Clap, FromArgMatches};
+use futures_util::future::{join_all, try_join_all};
+use tokio::try_join;
 
 use crate as deploy;
 
@@ -545,7 +547,7 @@ async fn run_deploy(
 
         if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
             warn!("Interactive sudo is enabled! Using a sudo password is less secure than correctly configured SSH keys.\nPlease use keys in production environments.");
-            
+
             if deploy_data.merged_settings.sudo.is_some() {
                 warn!("Custom sudo commands should be configured to accept password input from stdin when using the 'interactive sudo' option. Deployment may fail if the custom command ignores stdin.");
             } else {
@@ -585,13 +587,33 @@ async fn run_deploy(
         )
     };
 
-    for data in data_iter() {
-        deploy::push::build_profile(data).await?;
-    }
+    let (remote_builds, local_builds): (Vec<_>, Vec<_>) = data_iter().partition(|data| {
+        data.deploy_data.merged_settings.remote_build.unwrap_or_default()
+    });
 
-    for data in data_iter() {
-        deploy::push::push_profile(data).await?;
-    }
+    // await both the remote builds and the local builds to speed up deployment times
+    try_join!(
+        // remote builds can be run asynchronously since they do not affect the local machine
+        try_join_all(remote_builds.into_iter().map(|data| async {
+            let data = data;
+            deploy::push::build_profile(&data).await
+        })),
+        async {
+            // run local builds synchronously to prevent hardware deadlocks
+            for data in &local_builds {
+                deploy::push::build_profile(data).await?;
+            }
+
+            // push all profiles asynchronously
+            join_all(local_builds.into_iter().map(|data| async {
+                let data = data;
+                deploy::push::push_profile(&data).await
+            })).await;
+
+            Ok(())
+        }
+    )?;
+
 
     let mut succeeded: Vec<(&deploy::DeployData, &deploy::DeployDefs)> = vec![];
 
