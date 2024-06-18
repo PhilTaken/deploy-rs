@@ -2,40 +2,39 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+// silence clippy warnings about the dejson macro
+#![allow(clippy::question_mark)]
+
 use merge::Merge;
-use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone, Merge)]
+#[merge(strategy = merge::option::overwrite_none)]
 pub struct GenericSettings {
-    #[serde(rename(deserialize = "sshUser"))]
+    #[serde(rename = "sshUser")]
     pub ssh_user: Option<String>,
     pub user: Option<String>,
-    #[serde(
-        skip_serializing_if = "Vec::is_empty",
-        default,
-        rename(deserialize = "sshOpts")
-    )]
+    #[serde(skip_serializing_if = "Vec::is_empty", default, rename = "sshOpts")]
     #[merge(strategy = merge::vec::append)]
     pub ssh_opts: Vec<String>,
-    #[serde(rename(deserialize = "fastConnection"))]
+    #[serde(rename = "fastConnection")]
     pub fast_connection: Option<bool>,
-    #[serde(rename(deserialize = "autoRollback"))]
+    #[serde(rename = "autoRollback")]
     pub auto_rollback: Option<bool>,
-    #[serde(rename(deserialize = "confirmTimeout"))]
+    #[serde(rename = "confirmTimeout")]
     pub confirm_timeout: Option<u16>,
-    #[serde(rename(deserialize = "activationTimeout"))]
+    #[serde(rename = "activationTimeout")]
     pub activation_timeout: Option<u16>,
-    #[serde(rename(deserialize = "tempPath"))]
-    pub temp_path: Option<PathBuf>,
-    #[serde(rename(deserialize = "magicRollback"))]
+    #[serde(rename = "tempPath")]
+    pub temp_path: Option<String>,
+    #[serde(rename = "magicRollback")]
     pub magic_rollback: Option<bool>,
-    #[serde(rename(deserialize = "sudo"))]
+    #[serde(rename = "sudo")]
     pub sudo: Option<String>,
-    #[serde(default,rename(deserialize = "remoteBuild"))]
+    #[serde(default, rename = "remoteBuild")]
     pub remote_build: Option<bool>,
-    #[serde(rename(deserialize = "interactiveSudo"))]
+    #[serde(rename = "interactiveSudo")]
     pub interactive_sudo: Option<bool>,
 }
 
@@ -43,18 +42,14 @@ pub struct GenericSettings {
 pub struct NodeSettings {
     pub hostname: String,
     pub profiles: HashMap<String, Profile>,
-    #[serde(
-        skip_serializing_if = "Vec::is_empty",
-        default,
-        rename(deserialize = "profilesOrder")
-    )]
+    #[serde(default, rename = "profilesOrder")]
     pub profiles_order: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ProfileSettings {
     pub path: String,
-    #[serde(rename(deserialize = "profilePath"))]
+    #[serde(rename = "profilePath")]
     pub profile_path: Option<String>,
 }
 

@@ -6,21 +6,19 @@
 use std::collections::HashMap;
 use std::io::{stdin, stdout, Write};
 
-use clap::{ArgMatches, Clap, FromArgMatches};
-
-use crate as deploy;
+use crate::{self as deploy};
+use clap::{ArgMatches, FromArgMatches, Parser};
 
 use self::deploy::{DeployFlake, ParseFlakeError};
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, error, info, warn};
-use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Stdio;
 use thiserror::Error;
 use tokio::process::Command;
 
 /// Simple Rust rewrite of a simple Nix Flake deployment tool
-#[derive(Clap, Debug, Clone)]
+#[derive(Parser, Debug, Clone)]
 #[clap(version = "1.0", author = "Serokell <https://serokell.io/>")]
 pub struct Opts {
     /// The flake to deploy
@@ -148,8 +146,8 @@ async fn check_deployment(
         check_command.arg("flake").arg("check").arg(repo);
     } else {
         check_command.arg("-E")
-                .arg("--no-out-link")
-                .arg(format!("let r = import {}/.; x = (if builtins.isFunction r then (r {{}}) else r); in if x ? checks then x.checks.${{builtins.currentSystem}} else {{}}", repo));
+            .arg("--no-out-link")
+            .arg(format!("let r = import {}/.; x = (if builtins.isFunction r then (r {{}}) else r); in if x ? checks then x.checks.${{builtins.currentSystem}} else {{}}", repo));
     }
 
     check_command.args(extra_build_args);
@@ -188,25 +186,25 @@ async fn get_deployment_data(
 ) -> Result<Vec<deploy::data::Data>, GetDeploymentDataError> {
     futures_util::stream::iter(flakes).then(|flake| async move {
 
-    info!("Evaluating flake in {}", flake.repo);
+        info!("Evaluating flake in {}", flake.repo);
 
-    let mut c = if supports_flakes {
-        Command::new("nix")
-    } else {
-        Command::new("nix-instantiate")
-    };
+        let mut c = if supports_flakes {
+            Command::new("nix")
+        } else {
+            Command::new("nix-instantiate")
+        };
 
-    if supports_flakes {
-        c.arg("eval")
-            .arg("--json")
-            .arg(format!("{}#deploy", flake.repo))
-            // We use --apply instead of --expr so that we don't have to deal with builtins.getFlake
-            .arg("--apply");
-        match (&flake.node, &flake.profile) {
-            (Some(node), Some(profile)) => {
-                // Ignore all nodes and all profiles but the one we're evaluating
-                c.arg(format!(
-                    r#"
+        if supports_flakes {
+            c.arg("eval")
+                .arg("--json")
+                .arg(format!("{}#deploy", flake.repo))
+                // We use --apply instead of --expr so that we don't have to deal with builtins.getFlake
+                .arg("--apply");
+            match (&flake.node, &flake.profile) {
+                (Some(node), Some(profile)) => {
+                    // Ignore all nodes and all profiles but the one we're evaluating
+                    c.arg(format!(
+                        r#"
                       deploy:
                       (deploy // {{
                         nodes = {{
@@ -218,13 +216,13 @@ async fn get_deployment_data(
                         }};
                       }})
                      "#,
-                    node, profile
-                ))
-            }
-            (Some(node), None) => {
-                // Ignore all nodes but the one we're evaluating
-                c.arg(format!(
-                    r#"
+                        node, profile
+                    ))
+                }
+                (Some(node), None) => {
+                    // Ignore all nodes but the one we're evaluating
+                    c.arg(format!(
+                        r#"
                       deploy:
                       (deploy // {{
                         nodes = {{
@@ -232,49 +230,50 @@ async fn get_deployment_data(
                         }};
                       }})
                     "#,
-                    node
-                ))
+                        node
+                    ))
+                }
+                (None, None) => {
+                    // We need to evaluate all profiles of all nodes anyway, so just do it strictly
+                    c.arg("deploy: deploy")
+                }
+                (None, Some(_)) => return Err(GetDeploymentDataError::ProfileNoNode),
             }
-            (None, None) => {
-                // We need to evaluate all profiles of all nodes anyway, so just do it strictly
-                c.arg("deploy: deploy")
-            }
-            (None, Some(_)) => return Err(GetDeploymentDataError::ProfileNoNode),
-        }
-    } else {
-        c
-            .arg("--strict")
-            .arg("--read-write-mode")
-            .arg("--json")
-            .arg("--eval")
-            .arg("-E")
-            .arg(format!("let r = import {}/.; in if builtins.isFunction r then (r {{}}).deploy else r.deploy", flake.repo))
-    };
+        } else {
+            c
+                .arg("--strict")
+                .arg("--read-write-mode")
+                .arg("--json")
+                .arg("--eval")
+                .arg("-E")
+                .arg(format!("let r = import {}/.; in if builtins.isFunction r then (r {{}}).deploy else r.deploy", flake.repo))
+        };
 
-    c.args(extra_build_args);
+        c.args(extra_build_args);
 
-    let build_child = c
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(GetDeploymentDataError::NixEval)?;
+        let build_child = c
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(GetDeploymentDataError::NixEval)?;
 
-    let build_output = build_child
-        .wait_with_output()
-        .await
-        .map_err(GetDeploymentDataError::NixEvalOut)?;
+        let build_output = build_child
+            .wait_with_output()
+            .await
+            .map_err(GetDeploymentDataError::NixEvalOut)?;
 
-    match build_output.status.code() {
-        Some(0) => (),
-        a => return Err(GetDeploymentDataError::NixEvalExit(a)),
-    };
+        match build_output.status.code() {
+            Some(0) => (),
+            a => return Err(GetDeploymentDataError::NixEvalExit(a)),
+        };
 
-    let data_json = String::from_utf8(build_output.stdout)?;
+        let data_json = String::from_utf8(build_output.stdout)?;
 
-    Ok(serde_json::from_str(&data_json)?)
-}).try_collect().await
+        Ok(serde_json::from_str(&data_json)?)
+    }).try_collect().await
 }
 
-#[derive(Serialize)]
+#[derive(Debug)]
+#[allow(dead_code)]
 struct PromptPart<'a> {
     user: &'a str,
     ssh_user: &'a str,
@@ -289,13 +288,13 @@ fn print_deployment(
         deploy::DeployData,
         deploy::DeployDefs,
     )],
-) -> Result<(), toml::ser::Error> {
+) {
     let mut part_map: HashMap<String, HashMap<String, PromptPart>> = HashMap::new();
 
     for (_, data, defs) in parts {
         part_map
             .entry(data.node_name.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(
                 data.profile_name.to_string(),
                 PromptPart {
@@ -308,16 +307,14 @@ fn print_deployment(
             );
     }
 
-    let toml = toml::to_string(&part_map)?;
-
-    info!("The following profiles are going to be deployed:\n{}", toml);
-
-    Ok(())
+    info!(
+        "The following profiles are going to be deployed:\n{:#?}",
+        part_map
+    );
 }
+
 #[derive(Error, Debug)]
 pub enum PromptDeploymentError {
-    #[error("Failed to make printable TOML of deployment: {0}")]
-    TomlFormat(#[from] toml::ser::Error),
     #[error("Failed to flush stdout prior to query: {0}")]
     StdoutFlush(std::io::Error),
     #[error("Failed to read line from stdin: {0}")]
@@ -333,7 +330,7 @@ fn prompt_deployment(
         deploy::DeployDefs,
     )],
 ) -> Result<(), PromptDeploymentError> {
-    print_deployment(parts)?;
+    print_deployment(parts);
 
     info!("Are you sure you want to deploy these profiles?");
     print!("> ");
@@ -367,8 +364,8 @@ fn prompt_deployment(
         } else {
             if !yn::no(&s) {
                 info!(
-                    "That was unclear, but sounded like a no to me. Please say \"yes\" or \"no\" to be more clear."
-                );
+                "That was unclear, but sounded like a no to me. Please say \"yes\" or \"no\" to be more clear."
+            );
             }
 
             return Err(PromptDeploymentError::Cancelled);
@@ -383,9 +380,9 @@ pub enum RunDeployError {
     #[error("Failed to deploy profile to node {0}: {1}")]
     DeployProfile(String, deploy::deploy::DeployProfileError),
     #[error("Failed to build profile on node {0}: {0}")]
-    BuildProfile(String,  deploy::push::PushProfileError),
+    BuildProfile(String, deploy::push::PushProfileError),
     #[error("Failed to push profile to node {0}: {0}")]
-    PushProfile(String,  deploy::push::PushProfileError),
+    PushProfile(String, deploy::push::PushProfileError),
     #[error("No profile named `{0}` was found")]
     ProfileNotFound(String),
     #[error("No node named `{0}` was found")]
@@ -394,14 +391,12 @@ pub enum RunDeployError {
     ProfileWithoutNode,
     #[error("Error processing deployment definitions: {0}")]
     DeployDataDefs(#[from] deploy::DeployDataDefsError),
-    #[error("Failed to make printable TOML of deployment: {0}")]
-    TomlFormat(#[from] toml::ser::Error),
     #[error("{0}")]
     PromptDeployment(#[from] PromptDeploymentError),
     #[error("Failed to revoke profile for node {0}: {1}")]
     RevokeProfile(String, deploy::deploy::RevokeProfileError),
     #[error("Deployment to node {0} failed, rolled back to previous generation")]
-    Rollback(String)
+    Rollback(String),
 }
 
 type ToDeploy<'a> = Vec<(
@@ -411,6 +406,7 @@ type ToDeploy<'a> = Vec<(
     (&'a str, &'a deploy::data::Profile),
 )>;
 
+#[allow(clippy::too_many_arguments)]
 async fn run_deploy(
     deploy_flakes: Vec<deploy::DeployFlake<'_>>,
     data: Vec<deploy::data::Data>,
@@ -545,7 +541,11 @@ async fn run_deploy(
 
         let mut deploy_defs = deploy_data.defs()?;
 
-        if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+        if deploy_data
+            .merged_settings
+            .interactive_sudo
+            .unwrap_or(false)
+        {
             warn!("Interactive sudo is enabled! Using a sudo password is less secure than correctly configured SSH keys.\nPlease use keys in production environments.");
 
             if deploy_data.merged_settings.sudo.is_some() {
@@ -557,8 +557,15 @@ async fn run_deploy(
                 deploy_defs.sudo = Some(format!("{} -S -p \"\"", original));
             }
 
-            info!("You will now be prompted for the sudo password for {}.", node.node_settings.hostname);
-            let sudo_password = rpassword::prompt_password(format!("(sudo for {}) Password: ", node.node_settings.hostname)).unwrap_or("".to_string());
+            info!(
+                "You will now be prompted for the sudo password for {}.",
+                node.node_settings.hostname
+            );
+            let sudo_password = rpassword::prompt_password(format!(
+                "(sudo for {}) Password: ",
+                node.node_settings.hostname
+            ))
+            .unwrap_or("".to_string());
 
             deploy_defs.sudo_password = Some(sudo_password);
         }
@@ -569,7 +576,7 @@ async fn run_deploy(
     if interactive {
         prompt_deployment(&parts[..])?;
     } else {
-        print_deployment(&parts[..])?;
+        print_deployment(&parts[..]);
     }
 
     let data_iter = || {
@@ -589,16 +596,16 @@ async fn run_deploy(
 
     for data in data_iter() {
         let node_name: String = data.deploy_data.node_name.to_string();
-        deploy::push::build_profile(data).await.map_err(|e| {
-            RunDeployError::BuildProfile(node_name, e)
-        })?;
+        deploy::push::build_profile(data)
+            .await
+            .map_err(|e| RunDeployError::BuildProfile(node_name, e))?;
     }
 
     for data in data_iter() {
         let node_name: String = data.deploy_data.node_name.to_string();
-        deploy::push::push_profile(data).await.map_err(|e| {
-            RunDeployError::PushProfile(node_name, e)
-        })?;
+        deploy::push::push_profile(data)
+            .await
+            .map_err(|e| RunDeployError::PushProfile(node_name, e))?;
     }
 
     let mut succeeded: Vec<(&deploy::DeployData, &deploy::DeployDefs)> = vec![];
@@ -608,7 +615,8 @@ async fn run_deploy(
     // Rollbacks adhere to the global seeting to auto_rollback and secondary
     // the profile's configuration
     for (_, deploy_data, deploy_defs) in &parts {
-        if let Err(e) = deploy::deploy::deploy_profile(deploy_data, deploy_defs, dry_activate, boot).await
+        if let Err(e) =
+            deploy::deploy::deploy_profile(deploy_data, deploy_defs, dry_activate, boot).await
         {
             error!("{}", e);
             if dry_activate {
@@ -621,14 +629,19 @@ async fn run_deploy(
                 //  the command line)
                 for (deploy_data, deploy_defs) in &succeeded {
                     if deploy_data.merged_settings.auto_rollback.unwrap_or(true) {
-                        deploy::deploy::revoke(*deploy_data, *deploy_defs).await.map_err(|e| {
-                            RunDeployError::RevokeProfile(deploy_data.node_name.to_string(), e)
-                        })?;
+                        deploy::deploy::revoke(deploy_data, deploy_defs)
+                            .await
+                            .map_err(|e| {
+                                RunDeployError::RevokeProfile(deploy_data.node_name.to_string(), e)
+                            })?;
                     }
                 }
                 return Err(RunDeployError::Rollback(deploy_data.node_name.to_string()));
             }
-            return Err(RunDeployError::DeployProfile(deploy_data.node_name.to_string(), e))
+            return Err(RunDeployError::DeployProfile(
+                deploy_data.node_name.to_string(),
+                e,
+            ));
         }
         succeeded.push((deploy_data, deploy_defs))
     }
@@ -658,11 +671,11 @@ pub enum RunError {
 
 pub async fn run(args: Option<&ArgMatches>) -> Result<(), RunError> {
     let opts = match args {
-        Some(o) => <Opts as FromArgMatches>::from_arg_matches(o),
+        Some(o) => <Opts as FromArgMatches>::from_arg_matches(o).unwrap(),
         None => Opts::parse(),
     };
 
-    deploy::init_logger(
+    let _handle = deploy::init_logger(
         opts.debug_logs,
         opts.log_dir.as_deref(),
         &deploy::LoggerType::Deploy,
@@ -696,7 +709,7 @@ pub async fn run(args: Option<&ArgMatches>) -> Result<(), RunError> {
         dry_activate: opts.dry_activate,
         remote_build: opts.remote_build,
         sudo: opts.sudo,
-        interactive_sudo: opts.interactive_sudo
+        interactive_sudo: opts.interactive_sudo,
     };
 
     let supports_flakes = test_flake_support().await.map_err(RunError::FlakeTest)?;

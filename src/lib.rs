@@ -4,19 +4,20 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use rnix::{types::*, SyntaxKind::*};
+use flexi_logger::{
+    style, DeferredNow, Duplicate, FileSpec, FlexiLoggerError, Logger, LoggerHandle,
+};
+use log::Record;
+use rnix::SyntaxKind::*;
 
 use merge::Merge;
 
 use thiserror::Error;
 
-use flexi_logger::*;
-
 use std::path::{Path, PathBuf};
 
 pub fn make_lock_path(temp_path: &Path, closure: &str) -> PathBuf {
-    let lock_hash =
-        &closure["/nix/store/".len()..closure.find('-').unwrap_or_else(|| closure.len())];
+    let lock_hash = &closure["/nix/store/".len()..closure.find('-').unwrap_or(closure.len())];
     temp_path.join(format!("deploy-rs-canary-{}", lock_hash))
 }
 
@@ -41,7 +42,7 @@ pub fn logger_formatter_activate(
         w,
         "⭐ {} [activate] [{}] {}",
         make_emoji(level),
-        style(level, level.to_string()),
+        style(level).paint(level.to_string()),
         record.args()
     )
 }
@@ -57,7 +58,7 @@ pub fn logger_formatter_wait(
         w,
         "👀 {} [wait] [{}] {}",
         make_emoji(level),
-        style(level, level.to_string()),
+        style(level).paint(level.to_string()),
         record.args()
     )
 }
@@ -73,7 +74,7 @@ pub fn logger_formatter_revoke(
         w,
         "↩️ {} [revoke] [{}] {}",
         make_emoji(level),
-        style(level, level.to_string()),
+        style(level).paint(level.to_string()),
         record.args()
     )
 }
@@ -89,7 +90,7 @@ pub fn logger_formatter_deploy(
         w,
         "🚀 {} [deploy] [{}] {}",
         make_emoji(level),
-        style(level, level.to_string()),
+        style(level).paint(level.to_string()),
         record.args()
     )
 }
@@ -105,7 +106,7 @@ pub fn init_logger(
     debug_logs: bool,
     log_dir: Option<&str>,
     logger_type: &LoggerType,
-) -> Result<(), FlexiLoggerError> {
+) -> Result<LoggerHandle, FlexiLoggerError> {
     let logger_formatter = match &logger_type {
         LoggerType::Deploy => logger_formatter_deploy,
         LoggerType::Activate => logger_formatter_activate,
@@ -113,38 +114,27 @@ pub fn init_logger(
         LoggerType::Revoke => logger_formatter_revoke,
     };
 
-    if let Some(log_dir) = log_dir {
-        let mut logger = Logger::with_env_or_str("debug")
-            .log_to_file()
-            .format_for_stderr(logger_formatter)
-            .set_palette("196;208;51;7;8".to_string())
-            .directory(log_dir)
+    let logger = if let Some(log_dir) = log_dir {
+        Logger::try_with_env_or_str("debug")?
+            .log_to_file(FileSpec::default().directory(log_dir))
+            .print_message()
             .duplicate_to_stderr(match debug_logs {
                 true => Duplicate::Debug,
                 false => Duplicate::Info,
             })
-            .print_message();
-
-        match logger_type {
-            LoggerType::Activate => logger = logger.discriminant("activate"),
-            LoggerType::Wait => logger = logger.discriminant("wait"),
-            LoggerType::Revoke => logger = logger.discriminant("revoke"),
-            LoggerType::Deploy => (),
-        }
-
-        logger.start()?;
+            .format_for_stderr(logger_formatter)
+            .set_palette("196;208;51;7;8".to_string())
     } else {
-        Logger::with_env_or_str(match debug_logs {
+        Logger::try_with_env_or_str(match debug_logs {
             true => "debug",
             false => "info",
-        })
-        .log_target(LogTarget::StdErr)
+        })?
+        //.log_target(LogTarget::StdErr)
         .format(logger_formatter)
         .set_palette("196;208;51;7;8".to_string())
-        .start()?;
-    }
+    };
 
-    Ok(())
+    logger.start()
 }
 
 pub mod cli;
@@ -195,49 +185,16 @@ pub fn parse_flake(flake: &str) -> Result<DeployFlake, ParseFlakeError> {
     let mut profile: Option<String> = None;
 
     if let Some(fragment) = maybe_fragment {
-        let ast = rnix::parse(fragment);
-
-        let first_child = match ast.root().node().first_child() {
-            Some(x) => x,
-            None => {
-                return Ok(DeployFlake {
-                    repo,
-                    node: None,
-                    profile: None,
-                })
-            }
-        };
-
-        let mut node_over = false;
-
-        for entry in first_child.children_with_tokens() {
-            let x: Option<String> = match (entry.kind(), node_over) {
-                (TOKEN_DOT, false) => {
-                    node_over = true;
-                    None
+        for (kind, value) in rnix::tokenize(fragment) {
+            match kind {
+                TOKEN_IDENT | TOKEN_STRING_CONTENT if node.is_some() => {
+                    profile = Some(value.to_string());
                 }
-                (TOKEN_DOT, true) => {
-                    return Err(ParseFlakeError::PathTooLong);
+                TOKEN_IDENT | TOKEN_STRING_CONTENT if node.is_none() => {
+                    node = Some(value.to_string());
                 }
-                (NODE_IDENT, _) => Some(entry.into_node().unwrap().text().to_string()),
-                (TOKEN_IDENT, _) => Some(entry.into_token().unwrap().text().to_string()),
-                (NODE_STRING, _) => {
-                    let c = entry
-                        .into_node()
-                        .unwrap()
-                        .children_with_tokens()
-                        .nth(1)
-                        .unwrap();
-
-                    Some(c.into_token().unwrap().text().to_string())
-                }
+                TOKEN_STRING_START | TOKEN_STRING_END | TOKEN_DOT => (),
                 _ => return Err(ParseFlakeError::Unrecognized),
-            };
-
-            if !node_over {
-                node = x;
-            } else {
-                profile = x;
             }
         }
     }
@@ -400,17 +357,23 @@ impl<'a> DeployData<'a> {
 
     fn get_profile_info(&'a self) -> Result<ProfileInfo, DeployDataDefsError> {
         match self.profile.profile_settings.profile_path {
-            Some(ref profile_path) => Ok(ProfileInfo::ProfilePath { profile_path: profile_path.to_string() }),
+            Some(ref profile_path) => Ok(ProfileInfo::ProfilePath {
+                profile_path: profile_path.to_string(),
+            }),
             None => {
                 let profile_user = self.get_profile_user()?;
-                Ok(ProfileInfo::ProfileUserAndName { profile_user, profile_name: self.profile_name.to_string() })
-            },
+                Ok(ProfileInfo::ProfileUserAndName {
+                    profile_user,
+                    profile_name: self.profile_name.to_string(),
+                })
+            }
         }
     }
 }
 
-pub fn make_deploy_data<'a, 's>(
-    top_settings: &'s data::GenericSettings,
+#[allow(clippy::too_many_arguments)]
+pub fn make_deploy_data<'a>(
+    top_settings: &data::GenericSettings,
     node: &'a data::Node,
     node_name: &'a str,
     profile: &'a data::Profile,

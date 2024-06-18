@@ -144,7 +144,10 @@ fn build_wait_command(data: &WaitCommandData) -> String {
         data.temp_path.display(),
     );
     if let Some(activation_timeout) = data.activation_timeout {
-        self_activate_command = format!("{} --activation-timeout {}", self_activate_command, activation_timeout);
+        self_activate_command = format!(
+            "{} --activation-timeout {}",
+            self_activate_command, activation_timeout
+        );
     }
 
     if let Some(sudo_cmd) = &data.sudo {
@@ -242,20 +245,27 @@ fn test_revoke_command_builder() {
     );
 }
 
-async fn handle_sudo_stdin(ssh_activate_child: &mut tokio::process::Child, deploy_defs: &DeployDefs) -> Result<(), std::io::Error> {
+async fn handle_sudo_stdin(
+    ssh_activate_child: &mut tokio::process::Child,
+    deploy_defs: &DeployDefs,
+) -> Result<(), std::io::Error> {
     match ssh_activate_child.stdin.as_mut() {
         Some(stdin) => {
-            let _ = stdin.write_all(format!("{}\n",deploy_defs.sudo_password.clone().unwrap_or("".to_string())).as_bytes()).await;
+            let _ = stdin
+                .write_all(
+                    format!(
+                        "{}\n",
+                        deploy_defs.sudo_password.clone().unwrap_or("".to_string())
+                    )
+                    .as_bytes(),
+                )
+                .await;
             Ok(())
         }
-        None => {
-            Err(
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to open stdin for sudo command",
-                )
-            )
-        }
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to open stdin for sudo command",
+        )),
     }
 }
 
@@ -300,8 +310,12 @@ pub async fn confirm_profile(
         .arg(confirm_command)
         .spawn()
         .map_err(ConfirmProfileError::SSHConfirm)?;
-    
-    if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+
+    if deploy_data
+        .merged_settings
+        .interactive_sudo
+        .unwrap_or(false)
+    {
         trace!("[confirm] Piping in sudo password");
         handle_sudo_stdin(&mut ssh_confirm_child, deploy_defs)
             .await
@@ -311,7 +325,7 @@ pub async fn confirm_profile(
     let ssh_confirm_exit_status = ssh_confirm_child
         .wait()
         .await
-        .map_err(ConfirmProfileError::SSHConfirm)?; 
+        .map_err(ConfirmProfileError::SSHConfirm)?;
 
     match ssh_confirm_exit_status.code() {
         Some(0) => (),
@@ -361,7 +375,7 @@ pub async fn deploy_profile(
     }
 
     let temp_path: &Path = match &deploy_data.merged_settings.temp_path {
-        Some(x) => x,
+        Some(x) => Path::new(x),
         None => Path::new("/tmp"),
     };
 
@@ -378,7 +392,7 @@ pub async fn deploy_profile(
         profile_info: &deploy_data.get_profile_info()?,
         closure: &deploy_data.profile.profile_settings.path,
         auto_rollback,
-        temp_path: temp_path,
+        temp_path,
         confirm_timeout,
         magic_rollback,
         debug_logs: deploy_data.debug_logs,
@@ -402,7 +416,7 @@ pub async fn deploy_profile(
         .stdin(std::process::Stdio::piped());
 
     for ssh_opt in &deploy_data.merged_settings.ssh_opts {
-        ssh_activate_command.arg(&ssh_opt);
+        ssh_activate_command.arg(ssh_opt);
     }
 
     if !magic_rollback || dry_activate || boot {
@@ -411,7 +425,11 @@ pub async fn deploy_profile(
             .spawn()
             .map_err(DeployProfileError::SSHSpawnActivate)?;
 
-        if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+        if deploy_data
+            .merged_settings
+            .interactive_sudo
+            .unwrap_or(false)
+        {
             trace!("[activate] Piping in sudo password");
             handle_sudo_stdin(&mut ssh_activate_child, deploy_defs)
                 .await
@@ -439,8 +457,8 @@ pub async fn deploy_profile(
         let self_wait_command = build_wait_command(&WaitCommandData {
             sudo: &deploy_defs.sudo,
             closure: &deploy_data.profile.profile_settings.path,
-            temp_path: temp_path,
-            activation_timeout: activation_timeout,
+            temp_path,
+            activation_timeout,
             debug_logs: deploy_data.debug_logs,
             log_dir: deploy_data.log_dir,
         });
@@ -452,7 +470,11 @@ pub async fn deploy_profile(
             .spawn()
             .map_err(DeployProfileError::SSHSpawnActivate)?;
 
-        if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+        if deploy_data
+            .merged_settings
+            .interactive_sudo
+            .unwrap_or(false)
+        {
             trace!("[activate] Piping in sudo password");
             handle_sudo_stdin(&mut ssh_activate_child, deploy_defs)
                 .await
@@ -465,7 +487,7 @@ pub async fn deploy_profile(
         ssh_wait_command
             .arg(&ssh_addr)
             .stdin(std::process::Stdio::piped());
-        
+
         for ssh_opt in &deploy_data.merged_settings.ssh_opts {
             ssh_wait_command.arg(ssh_opt);
         }
@@ -496,7 +518,11 @@ pub async fn deploy_profile(
             .spawn()
             .map_err(DeployProfileError::SSHWait)?;
 
-        if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+        if deploy_data
+            .merged_settings
+            .interactive_sudo
+            .unwrap_or(false)
+        {
             trace!("[wait] Piping in sudo password");
             handle_sudo_stdin(&mut ssh_wait_child, deploy_defs)
                 .await
@@ -571,7 +597,7 @@ pub async fn revoke(
         .stdin(std::process::Stdio::piped());
 
     for ssh_opt in &deploy_data.merged_settings.ssh_opts {
-        ssh_activate_command.arg(&ssh_opt);
+        ssh_activate_command.arg(ssh_opt);
     }
 
     let mut ssh_revoke_child = ssh_activate_command
@@ -579,7 +605,11 @@ pub async fn revoke(
         .spawn()
         .map_err(RevokeProfileError::SSHSpawnRevoke)?;
 
-    if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
+    if deploy_data
+        .merged_settings
+        .interactive_sudo
+        .unwrap_or(false)
+    {
         trace!("[revoke] Piping in sudo password");
         handle_sudo_stdin(&mut ssh_revoke_child, deploy_defs)
             .await

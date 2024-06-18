@@ -6,7 +6,7 @@
 
 use signal_hook::{consts::signal::SIGHUP, iterator::Signals};
 
-use clap::Clap;
+use clap::{Parser, Subcommand};
 
 use tokio::fs;
 use tokio::process::Command;
@@ -25,7 +25,7 @@ use thiserror::Error;
 use log::{debug, error, info, warn};
 
 /// Remote activation utility for deploy-rs
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 #[clap(version = "1.0", author = "Serokell <https://serokell.io/>")]
 struct Opts {
     /// Print debug logs to output
@@ -35,90 +35,72 @@ struct Opts {
     #[clap(long)]
     log_dir: Option<String>,
 
-    #[clap(subcommand)]
-    subcmd: SubCommand,
+    #[command(subcommand)]
+    subcmd: SubCmd,
 }
 
-#[derive(Clap, Debug)]
-enum SubCommand {
-    Activate(ActivateOpts),
-    Wait(WaitOpts),
-    Revoke(RevokeOpts),
-}
+#[derive(Subcommand, Debug)]
+enum SubCmd {
+    Activate {
+        /// The closure to activate
+        closure: String,
+        /// The profile path to install into
+        #[clap(long)]
+        profile_path: Option<String>,
+        /// The profile user if explicit profile path is not specified
+        #[clap(long, requires = "profile-name")]
+        profile_user: Option<String>,
+        /// The profile name
+        #[clap(long, requires = "profile-user")]
+        profile_name: Option<String>,
 
-/// Activate a profile
-#[derive(Clap, Debug)]
-#[clap(group(
-    clap::ArgGroup::new("profile")
-        .required(true)
-        .multiple(false)
-        .args(&["profile-path","profile-user"])
-))]
-struct ActivateOpts {
-    /// The closure to activate
-    closure: String,
-    /// The profile path to install into
-    #[clap(long)]
-    profile_path: Option<String>,
-    /// The profile user if explicit profile path is not specified
-    #[clap(long, requires = "profile-name")]
-    profile_user: Option<String>,
-    /// The profile name
-    #[clap(long, requires = "profile-user")]
-    profile_name: Option<String>,
+        /// Maximum time to wait for confirmation after activation
+        #[clap(long)]
+        confirm_timeout: u16,
 
-    /// Maximum time to wait for confirmation after activation
-    #[clap(long)]
-    confirm_timeout: u16,
+        /// Wait for confirmation after deployment and rollback if not confirmed
+        #[clap(long)]
+        magic_rollback: bool,
 
-    /// Wait for confirmation after deployment and rollback if not confirmed
-    #[clap(long)]
-    magic_rollback: bool,
+        /// Auto rollback if failure
+        #[clap(long)]
+        auto_rollback: bool,
 
-    /// Auto rollback if failure
-    #[clap(long)]
-    auto_rollback: bool,
+        /// Show what will be activated on the machines
+        #[clap(long)]
+        dry_activate: bool,
 
-    /// Show what will be activated on the machines
-    #[clap(long)]
-    dry_activate: bool,
+        /// Don't activate, but update the boot loader to boot into the new profile
+        #[clap(long)]
+        boot: bool,
 
-    /// Don't activate, but update the boot loader to boot into the new profile
-    #[clap(long)]
-    boot: bool,
+        /// Path for any temporary files that may be needed during activation
+        #[clap(long)]
+        temp_path: PathBuf,
+    },
+    Wait {
+        /// The closure to wait for
+        closure: String,
 
-    /// Path for any temporary files that may be needed during activation
-    #[clap(long)]
-    temp_path: PathBuf,
-}
+        /// Path for any temporary files that may be needed during activation
+        #[arg(long)]
+        temp_path: PathBuf,
 
-/// Wait for profile activation
-#[derive(Clap, Debug)]
-struct WaitOpts {
-    /// The closure to wait for
-    closure: String,
-
-    /// Path for any temporary files that may be needed during activation
-    #[clap(long)]
-    temp_path: PathBuf,
-
-    /// Timeout to wait for activation
-    #[clap(long)]
-    activation_timeout: Option<u16>,
-}
-
-/// Revoke profile activation
-#[derive(Clap, Debug)]
-struct RevokeOpts {
-    /// The profile path to install into
-    #[clap(long)]
-    profile_path: Option<String>,
-    /// The profile user if explicit profile path is not specified
-    #[clap(long, requires = "profile-name")]
-    profile_user: Option<String>,
-    /// The profile name
-    #[clap(long, requires = "profile-user")]
-    profile_name: Option<String>,
+        /// Timeout to wait for activation
+        #[clap(long)]
+        activation_timeout: Option<u16>,
+    },
+    Revoke {
+        /// The profile path to install into
+        #[clap(long)]
+        profile_path: Option<String>,
+        /// The profile user if explicit profile path is not specified
+        #[clap(long, requires = "profile-name")]
+        profile_user: Option<String>,
+        /// The profile name
+        #[clap(long, requires = "profile-user")]
+        profile_name: Option<String>,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -148,7 +130,7 @@ pub async fn deactivate(profile_path: &str) -> Result<(), DeactivateError> {
 
     let nix_env_rollback_exit_status = Command::new("nix-env")
         .arg("-p")
-        .arg(&profile_path)
+        .arg(profile_path)
         .arg("--rollback")
         .status()
         .await
@@ -163,7 +145,7 @@ pub async fn deactivate(profile_path: &str) -> Result<(), DeactivateError> {
 
     let nix_env_list_generations_out = Command::new("nix-env")
         .arg("-p")
-        .arg(&profile_path)
+        .arg(profile_path)
         .arg("--list-generations")
         .output()
         .await
@@ -192,7 +174,7 @@ pub async fn deactivate(profile_path: &str) -> Result<(), DeactivateError> {
 
     let nix_env_delete_generation_exit_status = Command::new("nix-env")
         .arg("-p")
-        .arg(&profile_path)
+        .arg(profile_path)
         .arg("--delete-generations")
         .arg(last_generation_id)
         .status()
@@ -207,8 +189,8 @@ pub async fn deactivate(profile_path: &str) -> Result<(), DeactivateError> {
     info!("Attempting to re-activate the last generation");
 
     let re_activate_exit_status = Command::new(format!("{}/deploy-rs-activate", profile_path))
-        .env("PROFILE", &profile_path)
-        .current_dir(&profile_path)
+        .env("PROFILE", profile_path)
+        .current_dir(profile_path)
         .status()
         .await
         .map_err(DeactivateError::Reactivate)?;
@@ -305,7 +287,7 @@ pub async fn activation_confirmation(
 
     danger_zone(done, confirm_timeout)
         .await
-        .map_err(|err| ActivationConfirmationError::WaitingError(err))
+        .map_err(ActivationConfirmationError::WaitingError)
 }
 
 #[derive(Error, Debug)]
@@ -315,7 +297,11 @@ pub enum WaitError {
     #[error("Error waiting for activation: {0}")]
     Waiting(#[from] DangerZoneError),
 }
-pub async fn wait(temp_path: PathBuf, closure: String, activation_timeout: Option<u16>) -> Result<(), WaitError> {
+pub async fn wait(
+    temp_path: PathBuf,
+    closure: String,
+    activation_timeout: Option<u16>,
+) -> Result<(), WaitError> {
     let lock_path = deploy::make_lock_path(&temp_path, &closure);
 
     let (created, done) = mpsc::channel(1);
@@ -381,6 +367,7 @@ pub enum ActivateError {
     ActivationConfirmation(#[from] ActivationConfirmationError),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn activate(
     profile_path: String,
     closure: String,
@@ -511,9 +498,7 @@ fn get_profile_path(
                         // using 'dirs::state_dir()' directly.
                         let state_dir = env::var("XDG_STATE_HOME").or_else(|_| {
                             dirs::home_dir()
-                                .map(|h| {
-                                    format!("{}/.local/state", h.as_path().display().to_string())
-                                })
+                                .map(|h| format!("{}/.local/state", h.as_path().display()))
                                 .ok_or(GetProfilePathError::NoUserHome(profile_user))
                         })?;
                         Ok(format!("{}/nix/profiles/{}", state_dir, profile_name))
@@ -528,7 +513,7 @@ fn get_profile_path(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure that this process stays alive after the SSH connection dies
-    let mut signals = Signals::new(&[SIGHUP])?;
+    let mut signals = Signals::new([SIGHUP])?;
     std::thread::spawn(move || {
         for _ in signals.forever() {
             println!("Received SIGHUP - ignoring...");
@@ -537,45 +522,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let opts: Opts = Opts::parse();
 
-    deploy::init_logger(
+    let _handle = deploy::init_logger(
         opts.debug_logs,
         opts.log_dir.as_deref(),
         &match opts.subcmd {
-            SubCommand::Activate(_) => deploy::LoggerType::Activate,
-            SubCommand::Wait(_) => deploy::LoggerType::Wait,
-            SubCommand::Revoke(_) => deploy::LoggerType::Revoke,
+            SubCmd::Activate { .. } => deploy::LoggerType::Activate,
+            SubCmd::Wait { .. } => deploy::LoggerType::Wait,
+            SubCmd::Revoke { .. } => deploy::LoggerType::Revoke,
         },
     )?;
 
     let r = match opts.subcmd {
-        SubCommand::Activate(activate_opts) => activate(
-            get_profile_path(
-                activate_opts.profile_path,
-                activate_opts.profile_user,
-                activate_opts.profile_name,
-            )?,
-            activate_opts.closure,
-            activate_opts.auto_rollback,
-            activate_opts.temp_path,
-            activate_opts.confirm_timeout,
-            activate_opts.magic_rollback,
-            activate_opts.dry_activate,
-            activate_opts.boot,
+        SubCmd::Activate {
+            closure,
+            profile_path,
+            profile_user,
+            profile_name,
+            confirm_timeout,
+            magic_rollback,
+            auto_rollback,
+            dry_activate,
+            boot,
+            temp_path,
+        } => activate(
+            get_profile_path(profile_path, profile_user, profile_name)?,
+            closure,
+            auto_rollback,
+            temp_path,
+            confirm_timeout,
+            magic_rollback,
+            dry_activate,
+            boot,
         )
         .await
         .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),
 
-        SubCommand::Wait(wait_opts) => wait(wait_opts.temp_path, wait_opts.closure, wait_opts.activation_timeout)
+        SubCmd::Wait {
+            closure,
+            temp_path,
+            activation_timeout,
+        } => wait(temp_path, closure, activation_timeout)
             .await
             .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),
 
-        SubCommand::Revoke(revoke_opts) => revoke(get_profile_path(
-            revoke_opts.profile_path,
-            revoke_opts.profile_user,
-            revoke_opts.profile_name,
-        )?)
-        .await
-        .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),
+        SubCmd::Revoke {
+            profile_path,
+            profile_user,
+            profile_name,
+        } => revoke(get_profile_path(profile_path, profile_user, profile_name)?)
+            .await
+            .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),
     };
 
     match r {
