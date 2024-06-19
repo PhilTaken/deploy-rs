@@ -243,7 +243,7 @@ pub async fn build_profile(data: PushProfileData<'_>) -> Result<(), PushProfileE
         a => return Err(PushProfileError::ShowDerivationExit(a)),
     };
 
-    let derivation_info: HashMap<String, String> =
+    let derivation_info: HashMap<String, serde_json::Value> =
         serde_json::from_slice(&show_derivation_output.stdout).map_err(PushProfileError::ShowDerivationParse)?;
 
     let deriver = derivation_info
