@@ -8,6 +8,7 @@ use std::io::{stdin, stdout, Write};
 
 use crate::{self as deploy};
 use clap::{ArgMatches, FromArgMatches, Parser};
+use serde::Serialize;
 
 use self::deploy::{DeployFlake, ParseFlakeError};
 use futures_util::stream::{StreamExt, TryStreamExt};
@@ -272,13 +273,14 @@ async fn get_deployment_data(
     }).try_collect().await
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 struct PromptPart<'a> {
     user: &'a str,
     ssh_user: &'a str,
     path: &'a str,
     hostname: &'a str,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
     ssh_opts: &'a [String],
 }
 
@@ -308,8 +310,8 @@ fn print_deployment(
     }
 
     info!(
-        "The following profiles are going to be deployed:\n{:#?}",
-        part_map
+        "The following profiles are going to be deployed:\n{}",
+        serde_json::to_string_pretty(&part_map).unwrap()
     );
 }
 
